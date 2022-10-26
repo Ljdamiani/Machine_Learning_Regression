@@ -1,0 +1,773 @@
+---
+title: "Avaliação 2 - Regressão"
+author:
+-
+- 'Leonardo Ribeiro Damiani Júnior'
+- 'Cartão UFRGS: 00326165'
+
+output:
+  pdf_document: default
+lang: pt-br
+tables: yes
+---
+
+\setlength{\parindent}{1cm}
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Pacotes
+
+library(knitr)
+library(pastecs)
+library(ggplot2)
+library(MASS)
+library(dplyr) # cuidar funcao select
+library(ggthemes)
+library(gridExtra)
+library(randomForest)
+library(gbm)
+library(caret)
+
+```
+
+
+# Importação e Análise do Banco
+
+## Importação
+
+O banco de estudantes foi importado e este possui 649 linhas por 33 colunas (variáveis) denominado \texttt{dados}. 
+
+Abaixo temos as primeiras linhas dos dados de estudantes de um certo local e algumas de suas colunas escolhidas junto da variável G3 (nossa variável alvo sendo a nota final dos alunos).
+
+```{r, echo=FALSE}
+
+# BANCO
+dados = read.table("estudantes_dados.csv", sep=";", header=TRUE)
+
+# Filtrando algumas colunas a se apresentar
+apr = dados %>%
+  head() %>%
+  select(school, sex, age, studytime, activities, internet, romantic, G3)
+
+# Apresentando as primeiras linhas
+kable(apr, caption = "Primeiras Seis Linhas e Algumas Colunas")
+
+```
+
+\vspace{0.5cm}
+
+## Análise do Banco
+
+Podemos então, perceber que não existem dados faltantes em nosso banco:
+
+```{r, echo=FALSE}
+
+# Verificando NAs
+nas = table(is.na(dados))
+if (is.na(nas[2])){nas = 0} else {nas = nas[2]}
+
+# Criando Data Frame
+nas = data.frame(nas)
+colnames(nas) = "Número de Dados Faltantes (NA)"
+
+# tabela
+kable(nas, align = "c")
+
+```
+
+
+Ainda, conseguimos verificar quantas variáveis qualitativas e quantitativas nós temos em nosso banco. Note que primeiro estamos transformando as devidas variáveis em fatores (categóricas) e já retirando as variáveis G1 e G2 do nosso banco (variáveis que compoem a nota final).
+
+
+```{r, echo=FALSE}
+
+# Retira colunas de G1 e G2
+dados$G1 = NULL
+dados$G2 = NULL
+
+# Define as quantitativas
+qta = c("age", "failures", "absences", "G3")
+# Subconjunto de quantitativas
+dados.n = dados[names(dados) %in% qta]
+# Subconjunto de qualitativas
+dados.q = dados[!(names(dados) %in% qta)]
+
+# Transformando em Fatores
+subq = names(dados.q) # nome das qualis
+dados.q[subq] = lapply(dados.q[subq], as.factor) 
+
+# Numero de Qualitativas -- ql
+ql = length(dados.q)
+  
+# Numero de Quantitativas -- qt
+qt = length(dados.n)
+
+# Data Frame 
+numeros = data.frame(qt, ql)
+rownames(numeros) = "Frequências"
+colnames(numeros) = c("Qualitativas", "Qualitativas")
+
+# Tabela
+kable(numeros, align = "c")
+
+```
+
+Assim, percebemos que nosso banco é formado em sua maioria por variáveis categóricas e por isso, iremos utilizar, posteriormente, o one-hot-encoding de forma a tratarmos estas categorias em pról dos futuros métodos que iremos ajustar como Random Forest, Bagging e Boosting.
+
+Além disso, em nossa próxima página, ainda, estaremos apresentando as frequências destas nossas variáveis categóricas junto das principais estatísticas das nossas variáveis quantitativas para nos termos uma noção de como estas se comportam.
+
+\newpage
+
+```{r, echo=FALSE}
+
+resumo = summary(dados.q)
+
+# Frequências das Qualitativas
+
+kable(resumo[1:2, c(1:5, 14)], 
+      align = "c", caption = "Tabelas de Frequências das Variáveis Qualitativas")
+kable(resumo[1:2, c(15:21)])
+kable(resumo[1:5, c(6:11)])
+kable(resumo[1:5, c(12:13, 22:27)])
+
+```
+\vspace{0.7cm}
+
+```{r, echo=FALSE}
+# Estatísticas das Quantitativas
+
+aux1 <- stat.desc(dados.n)
+aux1 <- aux1[c(4,5,8,9,12:14),]
+
+rownames(aux1) <- c(" Mínimo "," Máximo "," Mediana "," Média ",
+                    " Variância "," Desvio Padrão ",
+                    " Coeficiente de Variação ")
+aux1 = t(aux1)
+
+# Tabela com as Principais Estatísticas
+
+kable(aux1, digits = 4, 
+      align = "c", caption = "Estatísticas Descritivas das Variáveis Numéricas")
+
+
+```
+
+\vspace{0.5cm}
+
+Através das tabelas acima, podemos perceber que nas variáveis catégoricas algumas delas tem poucas observações, sendo estas as variáveis: Medu, Fedu, traveltime, famrel, Dalc. Por isso, iremos verificar as suas relações com a variável resposta G3,
+
+Já para as variáveis numéricas, percebemos um comportamento curioso nas variáveis failures e absences, pois ambas parecem se concentrar em valores baixos como em zero. Então, também olharemos como estas variáveis se comportam em relação a G3.
+
+Ressaltamos, que as demais variáveis seguirão como estão. 
+
+\newpage
+
+### Análise de Medu, Fedu, traveltime, famrel, Dalc, failures e absences.
+
+Abaixo, estaremos agrupando as variáveis categórias pelas suas respectivas categorias e olhando para a média destes índividuos (de cada categoria) na variável G3.
+
+```{r, echo=FALSE}
+
+# Agrupando as variáveis em suas categorias
+a1 = aggregate(dados$G3, list(dados$Medu), FUN = mean)
+colnames(a1) = c("Categorias - Medu", "G3")
+a2 = aggregate(dados$G3, list(dados$Fedu), FUN = mean)
+colnames(a2) = c("Categorias - Fedu", "G3")
+a3 = aggregate(dados$G3, list(dados$traveltime), FUN = mean)
+colnames(a3) = c("Categorias - traveltime", "G3")
+a4 = aggregate(dados$G3, list(dados$famrel), FUN = mean)
+colnames(a4) = c("Categorias - famrel", "G3")
+a5 = aggregate(dados$G3, list(dados$Dalc), FUN = mean)
+colnames(a5) = c("Categorias - Dalc", "G3")
+
+# Tabelas
+kable(a1, digits = 3, align = "c")
+kable(a2, digits = 3, align = "c")
+kable(a3, digits = 3, align = "c")
+kable(a4, digits = 3, align = "c")
+kable(a5, digits = 3, align = "c")
+
+```
+
+
+Assim, através das tabelas percebemos que podemos realizar algumas modificações em nosso conjunto de dados.q (juntar categorias), pois note algumas das nossas categorias que apresentaram poucos valores possuem uma média parecida com pelo menos uma outra categoria.
+
+Por isso, para reforçar essa nossa análise estaremos apresentando as modificações que iremos fazer nas variáveis, onde os números entre parênteses são as frequências de cada categorias junto das médias da variável G3.
+
+\newpage
+
+### Modificações nas Categóricas
+
+- \textbf{Medu:} Estamos juntando as categorias 0 (6 | 11.667) e 2 (186 | 11.661) na categoria 0e2.
+
+- \textbf{Fedu:} Estamos juntando as categorias 0 (7 | 12.143) e 3 (131 | 12.382) na categoria 0e3.
+
+- \textbf{traveltime:} Estamos juntando as categorias 3 (54 | 11.167) e 4 (16 | 10.875) na categoria 3e4.
+
+- \textbf{famrel:} Estamos juntando as categorias 1 (22 | 10.636) e 2 (29 | 10.862) na categoria 1e2.
+
+- \textbf{Dalc:} Não iremos juntar nenhuma das categorias 3 (43 | 11.14), 4 (17 | 8.941) e 5 (17 | 10.235).
+
+```{r, echo=FALSE}
+
+# Alterando as categorias
+
+# Medu
+dados.q$Medu = factor(dados.q$Medu, levels = c("0", "1", "2", "3", "4"),
+                                labels = c("0e2", "1", "0e2", "3", "4"))
+
+# Fedu
+dados.q$Fedu = factor(dados.q$Fedu, levels = c("0", "1", "2", "3", "4"),
+                                labels = c("0e3", "1", "2", "0e3", "4"))
+
+# traveltime
+dados.q$traveltime = factor(dados.q$traveltime, levels = c("1", "2", "3", "4"),
+                                            labels = c("1", "2", "3e4", "3e4"))
+
+# famrel
+dados.q$famrel = factor(dados.q$famrel, levels = c("1", "2", "3", "4", "5"),
+                                    labels = c("1e2", "1e2", "3", "4", "5"))
+
+# Dalc
+#dados.q$Dalc = factor(dados.q$Dalc, levels = c("1", "2", "3", "4", "5"),
+#                                labels = c("1", "2", "3e4e5", "3e4e5", "3e4e5"))
+
+
+```
+
+\vspace{0.1cm}
+
+Aqui reforçamos que estas modificações são buscando aumentar as informações para os nossos métodos que virão em seguida e como podemos perceber acima, decidimos por não juntar as categorias da variável Dalc, pois estas apresentavam valores muito diferentes para a média.
+
+Agora olharemos para as nossas variáveis numéricas. Primeiramente utilizaremos as tabela de frequências novamente para verificar o comportamento dessas.
+
+\vspace{0.3cm}
+
+```{r, echo=FALSE}
+
+t1 = table(dados.n$failures)
+t2 = table(dados.n$absences)
+
+kable(t(t1), align = "c", caption = "Frequências de Failures")
+kable(t(t2), align = "c", caption = "Frequências de Absences")
+```
+
+\vspace{0.3cm}
+
+Percebemos, em ambas tabelas, que parece haver uma concentração em valores baixos, como no caso da variável failures, a maioria de suas observações foram de valor zero. Assim, podemos transformar estas variáveis em categóricas no mesmo intuito que anteiormente, buscando enriquecer nossos métodos.
+
+\vspace{0.3cm}
+
+### Modificações nas Variáveis Numéricas
+
+Sendo assim, avaliamos como se comportam as médias dessas possíveis categorias nas nossas variáveis de interesse.
+
+\vspace{0.3cm}
+
+```{r, echo=FALSE}
+# Agrupando as variáveis em suas categorias
+a1 = aggregate(dados.n$G3, list(dados.n$failures), FUN = mean)
+colnames(a1) = c("Categorias - failures", "G3")
+a2 = aggregate(dados.n$G3, list(dados.n$absences), FUN = mean)
+colnames(a2) = c("Categorias - absences", "G3")
+
+# Tabelas
+kable(a1, digits = 3)
+```
+
+\newpage
+
+```{r, echo=FALSE}
+kable(a2, digits = 3)
+
+```
+
+Como procedemos no caso das categóricas, transformaremos as variáveis em categóricas agregando alguma de suas categorias, mas note que procederemos isto apenas na variável failures. Por isso, temos as seguintes conclusões:
+
+- \textbf{failures:} Estamos juntando as observações 1 (70 | 8.643), 2 (16 | 8.812) e 3 (14 | 8.071)  na categoria 1e2e3.
+
+- \textbf{absences:} Não juntaremos as observações em categorias, pois os valores em média para G3 são muito diferentes uns dos outros.
+
+
+```{r, echo=FALSE}
+
+# Alterando as categorias
+
+# failures
+dados.n$failures = factor(dados.n$failures, levels = c("0", "1", "2", "3"),
+                                        labels = c("0", "1e2e3", "1e2e3", "1e2e3"))
+
+# absences
+
+#dados.n$absences = ifelse(dados.n$absences < 3, "0a2", 
+#                   ifelse(dados.n$absences >= 3 & dados.n$absences <= 10, "3a10", "10+"))
+
+# fator com ordem
+#dados.n$absences = factor(dados.n$absences, levels = c("0a2", "3a10", "10+"),
+#                                            labels = c("0a2", "3a10", "10+"))
+
+# Tabela absences
+#t = as.data.frame(table(dados.n$absences))
+#a = aggregate(dados.n$G3, list(dados.n$absences), FUN = mean)
+#t$G3 = a$x
+#colnames(t) = c("Categorias - absences", "Frequência", "G3")
+#kable(t, align = "c")
+
+```
+
+\vspace{0.3cm}
+
+Portanto, ressaltamos que estas análises nestas variáveis, tanto nas categóricas quanto nas numéricas, estão considerando uma possível melhora dos nossos resultados (EQM) que será abordada mais a frente com as implementações.
+
+Além disso, as decisões sobre não alterar as variáveis Dalc e absences é reforçada quando nós fizemos as alterações deixadas em comentários nos códigos anteriores, pois os resultados apresentaram um efeito negativo, ou seja, o desempenho de nossos métodos pioraram. 
+
+Assim, com estas análises em nosso banco de dados, passamos agora para a separação do banco, seguindo da aplicação do one-hot-encoding, antes de ajustarmos o nosso modelo linear.
+
+```{r, echo=FALSE}
+# Jutando novamente os dados
+dados = cbind(dados.n, dados.q)
+```
+
+
+\newpage
+
+# Separação do Banco de Dados
+
+Nesta parte iremos particionar o nosso banco de dados em 70 % para treino e 30 % para a predição como orientado no enunciado da nossa atividade. Através do código abaixo estamos realizando a partição a partir da semente do número do meu cartão UFRGS.
+
+\vspace{0.5cm}
+
+```{r}
+
+# Semente (Cartão UFRGS)
+set.seed(326165)
+
+# Índices para a separação
+temp = sample(1:dim(dados)[1], size = 0.7*dim(dados)[1], replace = F)
+
+# Conjunto de Treino
+dados.t = dados[temp,]
+
+# Conjunto de Predição
+dados.p = dados[-temp,]
+
+```
+
+\vspace{0.5cm}
+
+Assim podemos notar abaixo que as dimensões dos nossos conjuntos de treino e predição.
+
+\vspace{0.5cm}
+
+```{r, echo=FALSE}
+
+# Dimensões
+
+# Conjunto de Treino
+t = dim(dados.t)
+
+# Conjunto de Predição
+p = dim(dados.p)
+
+# Tabela
+tp = rbind(t, p)
+row.names(tp) = c("Treino", "Predição")
+colnames(tp) = c("Linhas", "Colunas")
+kable(tp, align = "c", caption = "Dimensões dos Dados")
+
+```
+
+\vspace{0.5cm}
+
+Note que a variável \texttt{temp} possui os índices das observações aleatorizadas para cada banco.
+
+
+\newpage
+
+# One -- Hot -- Encoding
+
+Nesta seção estamos interessados em utilizar o One-Hot-Encoding para obtermos os mesmos bancos de treino e predição com as devidas mudanças nas variáveis categórias (valores númericos 1 e 0). 
+
+O código abaixo está explicando o que está acontecendo em nosso banco.
+
+\vspace{0.5cm}
+
+```{r, echo=T}
+
+### ONE-HOT-ENCODING (automatizado)
+
+dados.hot = data.frame(rep(NA, 649)) # novo banco
+n = length(dados)
+
+for (i in 1:n){
+  
+  # Nome da coluna
+  name = colnames(dados)[i]
+  # Verifica se a coluna é um fator
+  if (class(dados[, i]) != "factor"){next}
+    
+  # Faz o One - Hot - Enconding
+  ohe <- model.matrix( ~ dados[, i] -1) # separa em outras variaveis dummys
+    
+  # Colocando as variaveis no banco para o modelo
+  for (k in 1:(ncol(ohe) - 1)){
+     # O nome da nova variável será o nome antigo mais a categoria 
+     # representativa do número 1  
+     name2 = paste0(name,"_",levels(dados[,i])[k])
+     dados.hot[,name2] = ohe[,k]
+  }}
+
+# Tirando a primeira variável de NAs
+dados.hot$rep.NA..649. = NULL
+# Adcionando as variáveis quantitativas - adicionar as numéricas
+dados.hot = cbind(dados.n[,c("age", "absences", "G3")], dados.hot)
+
+```
+
+Portanto, a partir do código acima, estamos com um novo banco denominado \texttt{dados.hot} no seguinte estilo (Novamente só mostramos as primeiras linhas). 
+
+```{r, echo=FALSE}
+
+# Filtrando algumas colunas a se apresentar
+apr2 = dados.hot %>%
+  head() %>%
+  select(school_GP, sex_F, age, 
+         failures_0, romantic_no, absences, G3)
+
+# Apresentando as primeiras linhas
+kable(apr2, caption = "Banco dados.hot (Pós One - Hot - Encoding)")
+
+```
+
+Além disso, note ainda que estaremos utilizando a mesma separação que anteriormente para gerar os dados de treino (\texttt{dados.hot.t}) e predição (\texttt{dados.hot.p}).
+
+
+```{r, echo=FALSE}
+
+# Conjunto de Treino
+dados.hot.t = dados.hot[temp,]
+
+# Conjunto de Predição
+dados.hot.p = dados.hot[-temp,]
+
+```
+
+
+
+\newpage
+
+# Modelo Linear Explicativo com Stepwise
+
+A seguir, através do R, estamos gerando um modelo linear no nosso conjunto de dados para treino sem one-hot-encoding e aplicando neste modelo a técnica de Stepwise para a escolha de um modelo mais parcimonioso.
+
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+## MODELO LINEAR PRIMEIRO
+mod.lm = lm(G3 ~ ., data = dados.t)
+
+## MODELO LINEAR COM STEPWISE
+mod.lms = stepAIC(mod.lm, direction = 'both', trace = 0)
+```
+
+Portanto, percebemos com as funções acima que das nossas 30 variáveis explicativas, estamos utilizando apenas 14 em nosso modelo linear abaixo. Assim, calculamos os coeficientes do modelo.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Modelo
+mod.lms$call
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Coeficientes
+coef = summary(mod.lms)
+kable(coef$coefficients, align = "c",
+      caption = "Coeficientes do Modelo")
+
+```
+
+## Interpretação dos Coeficientes Modelo
+
+A partir do modelo gerado e seus coeficientes na página anterior, conseguimos interpretar como a nossa variável alvo G3 se comporta em relação as variáveis utilizadas no modelo, sendo esta uma das vantagens do modelo linear. 
+
+Além disso, ressaltamos que para os coeficientes estimados, nós poderíamos calcular os seus intervalos de confiança, de forma a termos assim uma medida de variabilidade desses coeficientes (não iremos apresentar os intervalos, pois não é o foco da atividade).
+
+Sendo assim, para interpretarmos os nossos coeficientes, devemos ter em mente dois pontos chaves: o primeiro é que o nosso modelo calculado no R, leva em consideração, no caso de variáveis categóricas, a primeira categoria como de referência e além disso, as demais variáveis do banco de dados quando estivermos comparando categorias de uma certa variável, estão mantidas constantes. 
+
+Por isso, temos as seguintes relações para cada variável do modelo em comparação a G3.
+
+- **age** --  A variação esperada na nota do aluno, quando a idade deste aumenta em uma unidade é de 0.253. Assim, temos que quanto mais velho o aluno, este tende a ter uma nota maior quando consideramos a variável idade.
+
+- **failures** -- A nota do aluno, caso este já tenha reprovado de ano (nossa modificação de 1e2e3) é menor do que caso ele não tenha sido reprovado, pois estamos considerando a variável failures. Mantido as demais variáveis constantes, o aluno que já tenha reprovado tem uma nota estimada como a nota de alguém que passou - 2.827.
+
+- **school** -- A nota do aluno, caso este seja da escola Gabriel Pereira é maior do que caso ele seja da escola Mousinho da Silveira, pois estamos considerando a variável school. Mantido as demais variáveis constantes, o aluno que seja da escola Mousinho da Silveira tem uma nota estimada como a nota da escola Gabriel Pereira - 1.305.
+
+- **sex** -- A nota do aluno, caso este seja do sexo feminino é menor do que caso ele seja do sexo masculino, pois estamos considerando a variável sex. Mantido as demais variáveis constantes, o aluno que seja do sexo feminino tem uma nota estimada como a nota do sexo masculino - 0.751.
+
+- **address** -- A nota do aluno, caso este more na zona rural é maior do que caso ele more na zona urbana, pois estamos considerando a variável address. Mantido as demais variáveis constantes, o aluno que more na zona rural tem uma nota estimada como a nota do aluno da zona urbana + 0.505.
+
+- **famsize** -- A nota do aluno, caso este pertence a uma família de tamanho menor ou igual 3 é maior do que caso ele pertença a uma família de tamanho maior do que 3, pois estamos considerando a variável school. Mantido as demais variáveis constantes, o aluno que seja da  família de tamanho menor ou igual 3 tem uma nota estimada como a nota da de um aluno da família de tamanho maior do que 3 + 0.464.
+
+- **Fedu** --  A nota do aluno, caso este tenha um pai com educação superior é maior do que caso ele tenha um pai com apenas ensino médio ou nenhuma educação, pois estamos considerando a variável school. Ainda, através da nossa variável de referência percebemos que caso o aluno tenha um pai com apenas ensino médio ou nenhuma educação, este possuirá uma nota maior do que os alunos com pai que estudaram do quinto até o nono ano ou mesmo os alunos que tem os pais com aenas o ensino fundamental (sendo estes alunos os com as piores notas).
+
+- **studytime** -- A nota do aluno, caso este dedique mais tempo de estudo durante a semana tende a aumentar, assim o aluno que tenha mais tempo dedicado de estudo durante a semana tem uma nota maior do que aquele aluno que dedicou menos tempo. 
+
+- **schoolsup ** -- A nota do aluno, caso este tenha um apoio educacional extra é menor do que caso ele não tenha um apoio educacional extra, pois estamos considerando a variável schoolsup. Mantido as demais variáveis constantes, o aluno que tenha apoio educacional extra tem uma nota estimada como a nota de quem não tem apoio educacional extra - 1.568.
+
+- **higher** -- A nota do aluno, caso este queira fazer o ensino superior é maior do que caso ele não queira fazer o ensino superior, pois estamos considerando a variável higher. Mantido as demais variáveis constantes, o aluno que queira fazer o ensino superior tem uma nota estimada como a nota de um aluno que não queira fazer o ensino superior + 1.702.
+
+- **famrel** -- A nota do aluno, caso este pertença uma família com relacionamentos ruins ou muito ruins é menor do que o aluno pertencesse a uma família com relacionamentos normais, bons ou muito bons. Ainda, pelos nossos coeficientes, percebemos que o aluno possuirá a maior nota caso este pertença a uma família com um bom relacionamento. 
+
+- **goout** -- A nota do aluno, caso este saia com seus amigos numa frequência muito baixa ou normal ou até alta não parece variar muito, mas caso o aluno saia pouco com os seus amigos este tende a ter uma nota maior que as demais frequências e caso este saia numa frequência muito alta, este tende a ter a pior das notas.
+
+- **Dalc** -- A nota do aluno, caso este consuma muito pouco álcool diariamente ou numa quantidade normal não parece variar muito, mas caso o aluno consuma muito diariamente este tende a ter uma nota pior que os dois primeiros casos e caso este consuma pouco, este tende a ter pior nota ainda, só não sendo pior do que o aluno que consome de álcool elevada (não maior do que o muito).
+
+- **health** -- A nota do aluno tende a piorar na medida que o nível da sua saúde aumenta, com exceção do caso em que o aluno está mal, pois este tem uma nota maior do que quando ele está muito mal. 
+
+
+
+```{r, echo=FALSE}
+#kable(confint(m1), align = "c", 
+#      caption = "Intervalo de confiança para as estimativas")
+```
+
+\vspace{0.5cm}
+
+## Erro Quadrado Médio do Modelo Linear
+
+Por fim, utilizando o conjunto separado para a predição, realizamos a predição com nosso modelo linear afim de se calcular o Erro Quadrático Médio (EQM).
+
+\vspace{0.3cm}
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+
+# Predição
+pred.lms = predict(mod.lms, dados.p)
+
+# Data frame de Comparação
+comp = data_frame(predito = pred.lms, real = dados.p$G3)
+
+# Funcao para servir no sumario dos treinos
+eqm <- function(real, predito) {
+  n = length(real)
+  sum((real-predito)^2)/n
+}
+
+# Erro de Predição
+eqm(comp$predito, comp$real)
+
+```
+
+\vspace{0.3cm}
+
+Sendo assim, com este nosso modelo, chegamos a um $EQM = 6.722$.
+
+
+
+\newpage
+
+# Técnicas para a Regressão 
+
+Nesta seção estaremos ajustando diferentes técnicas na intenção de podermos preedizer a nossa variável G3 de forma a estarmos reduzindo o nosso EQM do modelo linear. Note que estamos utilizando todas as variáveis em nossas técnicas, pois estaremos buscando passar o máximo de informação à elas.
+
+Ainda, sobre o banco \texttt{dados.hot} que será utilizado, temos que este possui como classes de referência, nas categóricas, as primeiras categorias se assemelhando da abordagem do modelo linear.
+
+## Random Forest
+
+Assim, começamos primeiramente utilizando uma implementação do Random Forest através do pacote \texttt{randomForest}. Note que para um melhor desempenho do algoritmo estaremos utilizando o nosso banco \texttt{dados.hot.t}.
+
+\vspace{0.3cm}
+
+```{r}
+
+## RANDOM FOREST
+mod.for = randomForest(G3 ~ ., data = dados.hot.t,
+                       mtry = round((length(dados.hot.t) - 1)/3),  # regressao -> m = p/3
+                       importance = TRUE,
+                       ntrees = 1000) 
+pred.for = predict(mod.for, newdata = dados.hot.p)
+
+# EQM random forest
+eqm(pred.for, dados.hot.p$G3)
+
+```
+
+Sendo assim, com o Random Forest, chegamos a um $EQM = 6.373$ inferior ao encontrado pelo nosso modelo linear.
+
+Assim, podemos resumir que esta queda em nosso erro quadrado médio seja devido a forma do procedimento do Random Forest que é baseada em Bootstrapp Aggregation (Bagging), o que o torna um algoritmo ensambled. Ou seja, a combinação de previsões de múltiplos algoritmos de machine learning juntos (diversas árvores), de forma a obter previsões mais acuradas do que qualquer modelo individual.
+
+Portanto, na tentativa da minização do erro, deve-se ter em mente que a combinação de previsões de vários modelos em conjuntos funciona melhor se as previsões dos submodelos não forem correlacionadas. Por isso, o Random Forest altera o algoritmo para a maneira como as suas sub-árvores são aprendidas para que as previsões resultantes de todas as sub-árvores tenham menos correlação e consequentemente numa melhor acurácia (como dissemos). 
+
+Por isso, a utilização do bootstrap pelo algoritmo é para realizar uma reamostragem dos dados utilizados nestas árvores de decisão (sub-árvores). Assim, cada vez que uma divisão em uma árvore é considerada, uma amostra aleatória de m preditores são escolhidos como candidatos divididos do conjunto completo de preditores p, onde temos m < p (nosso caso usamos m = p/3). Pois, assim o Random Forest força cada divisão de seus nós a considerar apenas um subconjunto dos preditores, o que acarretará na nossa procura pelas árvores menos correlacionadas.
+
+Além disso, outra diferença importante para o modelo linear é a perda da nossa intepretação em nosso método, pois note que é inviável para a mente humana compreender as diversas árvores que estamos construindo através do Random Forest.
+
+Uma vez que compreendemos um pouco melhor o procedimento do Random Forest, passamos ao Bagging.
+
+
+\newpage
+
+## Bagging
+
+Agora modificaremos a nossa implementação do Random Forest para este, se transformar numa implementação do Bagging. Por isso, estaremos mudando os m, preditores escolhidos como candidatos divididos do conjunto completo de preditores p, para m = p.
+
+Note que, novamente estamos utilizando o nosso banco \texttt{dados.hot.t}.
+
+```{r}
+## BAGGING
+mod.bag = randomForest(G3 ~ ., data = dados.hot.t,
+                       mtry = (length(dados.hot.t) - 1),  # regression -> bagging -> m = p
+                       importance = TRUE,
+                       ntrees = 1000)
+pred.bag = predict(mod.bag, newdata = dados.hot.p)
+
+# EQM random forest
+eqm(pred.bag, dados.hot.p$G3)
+
+```
+
+Sendo assim, com o Bagging, chegamos a um $EQM = 6.98$ superior ao encontrado pelo nosso modelo linear e pela Random Forest.
+
+Como o Bagging neste caso trata do caso em que m = p, nós primeiro devemos lembrar que ele se comporta da mesma que a Random Forest com m < p, porém com essa diferença em relação a m, nós não temos a garantia da melhor (inferior) correlação das nossas árvores geradas em nossa floresta.
+
+Então, tanto pela aleatorização do bootstrap quanto por essa diferença comentada, nós temos uma melhor performance neste caso quando comparada aos demais métodos já utilizados.
+
+\newpage
+
+## Comparação entre Random Forest e Bagging
+
+Agora, como verificamos a melhor técnica dentre as duas utilizadas através do EQM, podemos notar abaixo as variáveis mais influentes neste nosso erro através da comparação de duas medidas.
+
+- $\% IncMSE \quad - \quad$ baseia-se na diminuição média da precisão nas previsões sobre as amostras do out of bag quando uma dada variável é permutada. 
+
+- $IncNodePurity \quad - \quad$ uma medida da diminuição total na impureza do nó que resulta das divisões sobre essa variável, calculada sobre todas as árvores. 
+ 
+
+```{r, echo=FALSE}
+
+# Pegando os índices para as comparacos
+impor = importance(mod.for)
+
+# IncMSE
+incmse = sort(impor[impor[,1] > 4, 1])
+levels = names(incmse)
+incmse = data.frame(var = names(incmse), valor = incmse)
+# criar um factor com níveis ordenados
+incmse$var <- factor(incmse$var, levels=levels, ordered=TRUE)
+
+# IncNodePurity
+incnodepurity = sort(impor[impor[,2] > 100, 2])
+levels = names(incnodepurity)
+incnodepurity = data.frame(var = names(incnodepurity), valor = incnodepurity)
+# criar um factor com níveis ordenados
+incnodepurity$var <- factor(incnodepurity$var, levels=levels, ordered=TRUE)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.height=3, fig.width=6}
+
+# Gráficos (ggplot2)
+
+# IncMSE
+ggplot(incmse, aes(y = var, x = valor)) + 
+  geom_col(fill = "tomato") +
+  labs(y = "Variáveis",
+       x = "% IncMSE")
+
+# IncNodePurity
+ggplot(incnodepurity, aes(y = var, x = valor)) + 
+  geom_col(fill = "tomato") +
+  labs(y = "Variáveis",
+       x = "IncNodePurity")
+
+```
+
+
+Com os gráficos acima, percebemos que temos as variáveis $Failures$ e $Heigher$ como as variáveis mais importantes dentre todas as árvores consideradas em nossa Random Forest.
+
+Uma possível aplicação seria o ajustamento dos métodos utilizados aqui, utilizando estas variáveis mais importantes, considerando todas as principais influentes.
+
+
+\newpage
+
+## Boosting
+
+Nesta última parte, estaremos buscando utilizar a técnica de Boosting. Com o código abaixo, buscamos mudar alguns parâmetros de forma a encontrarmos um melhor método para a predição de G3.
+
+```{r}
+mod.boost <- gbm(G3 ~ ., data = dados.hot.t,
+                  distribution = "gaussian", 
+                  n.trees = 5000,
+                  interaction.depth = 2,
+                  shrinkage = 0.001)
+pred.boost = predict(mod.boost, newdata = dados.hot.p, n.trees = 5000)
+
+# EQM random forest
+eqm(pred.boost, dados.hot.p$G3)
+
+```
+
+\vspace{0.3cm}
+
+Sendo assim, com o Boosting, chegamos a um $EQM = 6.08$ inferior aos demais encontrados, caracterizando assim como o Boosting como nossa melhor técnica agora.
+
+Isso pode ser caracterizado pela forma como o algoritmo de Boosting opera. As árvores de nossa floresta são cultivadas sequencialmente, ou seja, cada árvore é cultivada usando informações de
+árvores já criadas. Boosting não envolve a reamostragem através do bootstrap, na verdade cada árvore é ajustada em uma versão modificada do conjunto de dados original.
+
+Por isso, o Boosting ao contrário de ajustar uma única grande árvore de decisão aos dados, o que equivale a ajustar os dados de forma rígida e potencialmente overfitting, ele aprende lentamente, ou seja, se caracteriza por uma das abordagens de aprendizagem estatística que aprendem lentamente.
+
+Assim, como fizemos com o Random Forest, nós podemos verificar as variáveis mais importantes no Boosting e plotarmos os seus gráficos de dependência parcial.
+
+\newpage
+
+### Complementação do Boosting
+
+Primeiro, temos abaixo a tabela contendo as variáveis mais importantes.
+
+\vspace{0.3cm}
+
+```{r, echo=FALSE, include=FALSE}
+t = summary(mod.boost)
+```
+
+```{r, echo=FALSE}
+
+t = t[t$rel.inf > 2,]
+row.names(t) = NULL
+
+# Tabela
+kable(t[t$rel.inf > 2,], align = "c", caption = "Variáveis Mais Importantes")
+```
+
+
+\vspace{0.3cm}
+
+Assim, percebemos que as variáveis mais importantes são as variáveis Failures, School e Higher. Note que, assim como aconteceu anteriormente, estas variáveis aparecem entre as mais importantes.
+
+Por isso, plotaremos os gráficos para ilutrar os efeitos marginais dessas variáveis em relação a variável G3.
+
+
+```{r, echo=FALSE, fig.align='center', fig.height=3, fig.width=8}
+
+# Gráficos
+a = plot(mod.boost , i = "failures_0")
+b = plot(mod.boost , i = "school_GP")
+c = plot(mod.boost , i = "higher_no")
+grid.arrange(a, b, c, nrow = 1, ncol = 3)
+```
+
+\vspace{0.3cm}
+
+Portanto, podemos perceber que as notas aumentam com alunos não reprovados (failures_0), aumentam também com alunos vindo da escola Gabriel Pereira (school_GP) e as notas diminiuem com o não interesse em cursar o ensino superior.
+
+Percebemos que estas conclusões se assemelham as encontradas para estas variáveis no modelo linear.
+
+
+\newpage
+
+# Conclusão
+
+Ao final deste trabalho acredito ter compreendido o objetivo da diferença que podemos ter em relação aos erros de predição quando mudamos o foco da questão explicativa/interpretação para um foco na tentativa de minimizar os erros de predição.
+
+Isto fica claro ao compararmos o Modelo Linear e as demais técnicas, onde não conseguimos nas demais uma interpretação clara como ocorre nos coeficientes do modelo. Além disso, a minização dos erros é o claro objetivo buscado pelas técnicas e por isso todas as análises tanto através do one-hot-encoding quanto nas junções de classes das categorias foram em pról de buscar este melhor resultado.
+
+Reforço ainda que uma ideia inicial era utilizar a tunagem para tentar potencializar o nosso melhor método (Boosting), mas não foi possível a realização deste devido ao tempo para entregue desta atividade.
+
+
